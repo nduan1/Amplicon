@@ -1,0 +1,588 @@
+---
+title: "Amplicon"
+author: "Ning Duan"
+date: "10/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(vegan)
+library(tidyverse)
+library(reshape2)
+library(ggforce)
+```
+#Building a phyloseq object
+##load mothur output and metadata
+```{r}
+
+sharedfile = "amplicon_data/1stning16s.trim.contigs.good.unique.good.filter.unique.precluster.pick.pick.opti_mcc.unique_list.shared"
+taxfile = "amplicon_data/1stning16s.trim.contigs.good.unique.good.filter.unique.precluster.pick.pick.opti_mcc.unique_list.0.03.cons.taxonomy"
+mothur_meta_df<-read.csv("amplicon_data/mothur_meta.csv",sep=",",header=TRUE,row.names = 1)
+```
+
+```{r mothur_meta_df, echo=FALSE}
+head(mothur_meta_df,5)
+```
+##phyloseq object
+```{r}
+mothur_data <- import_mothur(mothur_shared_file = sharedfile, mothur_constaxonomy_file = taxfile)
+mothur_meta_df <- sample_data(mothur_meta_df)#be careful
+moth_merge<-merge_phyloseq(mothur_data,mothur_meta_df)
+moth_merge
+```
+
+```{r}
+colnames(tax_table(moth_merge))# we need assign taxonomy
+colnames(tax_table(moth_merge)) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")
+```
+
+#Preview raw data
+## bar plot of read depth
+```{r}
+Read_depth<-sample_sums(moth_merge)
+summary(Read_depth)
+sort(Read_depth,decreasing = TRUE)
+sample_names(mothur_meta_df)
+#mothur_meta_up<-prune_samples(sample_names(mothur_meta_df),mothur_meta_df)
+mothur_meta_up<-prune_samples(sample_names(mothur_meta_df)[-c(45,46,47,48,36)],mothur_meta_df)#remove VCNO_1-4 and VNTN60_4, if you don't have samples to remove, ignore this step
+dim(mothur_meta_up)#number of rows and columns
+sample_ID<- sample_names(mothur_meta_up)
+mothur_meta_up.1 <- mutate(data.frame(mothur_meta_up),rown=rownames(as.data.frame(mothur_meta_up)))
+Readdepth_row <- rownames(as.data.frame(Read_depth))
+Read_depth.1 <- mutate(data.frame(Read_depth),rown=Readdepth_row)
+mothur_meta.1<-left_join(as.data.frame(mothur_meta_up.1),as.data.frame(Read_depth.1),by="rown")# remove VCN0_4 and add read depth to metadata
+mothur_meta <- mothur_meta.1[,-26]#remove "rown" col
+colnames(mothur_meta)
+```
+
+```{r}
+#tiff('Sequencing depth barplot.tiff', units="in", width=16, height=8, res=300)
+cols_phylum <- c("#994e03", "#9B110E", "#688787" ,"#d49783", "#550307", "#446455", "#FDD262", "#D3DDDC", "#C7B19C","#899DA4", "#FAEFD1", "#DC863B","#798E87", "#C27D38","#CCC591","#29211F")
+ggplot(mothur_meta, aes(x =Treat, y = Read_depth,fill=Treat))+
+  geom_boxplot(size=0.3,width=0.3,alpha=1,notch = FALSE,na.rm=TRUE,outlier.shape=NA)+
+  geom_jitter(shape=16,size=1,position=position_jitterdodge(0.2),na.rm = TRUE,color="black")+
+  labs(title="",x="Treatment",y="Sequencing depth \n Paired reads (M)")+
+  scale_fill_manual(values=cols_phylum)+
+  theme_bw()
+#dev.off()
+```
+
+```{r}
+##rarefaction plot
+### 1) Rarefaction curve using maximum read depth
+# ```{r}
+# moth_merge_otu_table <- as.data.frame(t(otu_table(moth_merge)))
+# head(moth_merge_otu_table,3)
+# dim(moth_merge_otu_table)
+# # rarecurve(moth_merge_otu_table,step = 100,cex=0.5)
+# rare<-as.data.frame(rarefy(moth_merge_otu_table,sample =
+#                              seq(0,max(sample_sums(moth_merge),by=1000))))
+# rownames(rare)<-rownames(moth_merge_otu_table)
+# long_rare<-t(rare)
+# long_rare<-data.frame(subsample=seq(0,max(sample_sums(moth_merge)),by=1000),long_rare)
+# head(long_rare)
+# rare_melt<-melt(long_rare,id.vars = "subsample")# reshape2 package
+# head(rare_melt)
+
+# ggplot(rare_melt,aes(x=subsample,y=value,colour=variable))+
+#   geom_point()+
+#   geom_line(linetype ="dashed")+
+#   theme(legend.position="top")+
+#   ylab("Bactria OTU numbers")+
+#   theme(title=(element_text(size=15,family ="Times",face="bold")),
+#         text=element_text(family = "Times",face="bold"),
+#         panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+#         axis.text=element_text(size=13,family="Times"), 
+#         axis.title=element_text(size = 15,face="bold",family = "Times"),
+#         legend.title = element_text(size=13,face="bold",family = "Times"),
+#         legend.text = (element_text(size=10,family = "Times")),
+#         legend.position="right")+
+#   ggtitle("Rarefaction curve with maximum read depth")
+
+```
+#Pre-process
+##pre-processing and singleton remove
+```{r}
+head(taxa_sums(moth_merge))#sum total taxa reads for each sample 
+rms_mothur_phyloseq<-prune_taxa(taxa_sums(moth_merge)>5, moth_merge)
+#rms_mothur_phyloseq<-filter_taxa(moth_merge,function (x) sum(x > 3) > (0.2*length(x)), TRUE)#remove the taxa not seen more than 3 times in  at least 20% of the samples
+rms_mothur_phyloseq
+```
+##rarefaction 
+```{r}
+set.seed(1013)
+min(sample_sums(rms_mothur_phyloseq))
+rarefied_mothur_phyloseq<-rarefy_even_depth(rms_mothur_phyloseq,sample.size = min(sample_sums(rms_mothur_phyloseq)),rngseed = 1013,replace = TRUE,trimOTUs = TRUE,verbose = TRUE)#normalize the sequences based on the least number of sequences
+rarefied_mothur_phyloseq #22777 taxa
+```
+##relative abundance 
+```{r}
+r_rarefied_mothur_phyloseq<-transform_sample_counts(rarefied_mothur_phyloseq,function(x)x/sum(x))
+r_rarefied_mothur_phyloseq 
+prune_r_rarefied_mothur_phyloseq<-prune_taxa(taxa_sums(r_rarefied_mothur_phyloseq)>=0.02,r_rarefied_mothur_phyloseq)
+prune_r_rarefied_mothur_phyloseq #362 taxa
+colnames(tax_table(r_rarefied_mothur_phyloseq))<-c('Kingdom','Phylum','Class','Order','Family','Genus')
+rank_names(r_rarefied_mothur_phyloseq)
+```
+##stacked bar plot at phylum level
+```{r}
+phylum_r_rarefied_mothur_phyloseq<-tax_glom(r_rarefied_mothur_phyloseq,taxrank = rank_names(r_rarefied_mothur_phyloseq)[2],NArm=TRUE)# you can change [2] to other number representing other levels
+phylum_r_rarefied_mothur_phyloseq
+merged_r_phylum_rarefied_mothur_phyloseq<-merge_samples(phylum_r_rarefied_mothur_phyloseq,"Treat")#merge based on treatment
+merged_r_phylum_rarefied_mothur_phyloseq
+r_merged_phylum_r_rarefied_mothur_phyloseq<-transform_sample_counts(merged_r_phylum_rarefied_mothur_phyloseq,function(x) x/sum(x))
+r_merged_phylum_r_rarefied_mothur_phyloseq
+prune_r_merged_phylum_r_rarefied_mothur_phyloseq<-prune_taxa(taxa_sums(r_merged_phylum_r_rarefied_mothur_phyloseq)>=0.02,r_merged_phylum_r_rarefied_mothur_phyloseq)
+prune_r_merged_phylum_r_rarefied_mothur_phyloseq 
+sample_sums(prune_r_merged_phylum_r_rarefied_mothur_phyloseq)
+```
+```{r}
+phylum_combine<-cbind((tax_table(prune_r_merged_phylum_r_rarefied_mothur_phyloseq)[,2]),as.data.frame(otu_table(t(prune_r_merged_phylum_r_rarefied_mothur_phyloseq))))
+phylum_combine_sub.1 <- phylum_combine[order(phylum_combine[,2],decreasing = T),]
+phylum_combine_sub <- phylum_combine_sub.1[phylum_combine_sub.1$NCCN0>0.01,]#select relative abundance >1%
+phylum_melt<-melt(phylum_combine_sub,id.vars = "Phylum")
+# totally there have 12 phylum have been selected
+head(phylum_melt,3)
+```
+
+```{r}
+cols_phylum <- c("#1B9E77", "#7570B3", "#f2a7cd", "#66A61E", "#E6AB02", "#A6761D","#666666", "#56B4E9","#ABB065", "#999999","#F0E442", "#0072B2" ,"#00AFBB", "#E69F00","#D55E00", "#D95F02", "#CC79A7","#B2182B", "#D6604D", "#F4A582", "#FDDBC7", "#009E73","#D1E5F0", "#92C5DE", "#4393C3", "#2166AC", "#E7B800", "#FC4E07")
+#library(colorspace)
+# pal <- choose_palette()
+# cols_class = pal(11)
+#tiff('phylum_stackedbarplot', units="in", width=16, height=8, res=300)
+ggplot(phylum_melt, aes(x =variable, y = value, fill=Phylum))+
+  geom_bar(stat='identity',colour="grey",size=0.1)+
+  labs(title="",x="Treatment",y="Relative Abundance")+
+  scale_fill_manual(values=cols_phylum)+
+  theme(title=(element_text(size=10,family = "Times",face="bold")),
+        plot.margin = unit(c(0.5,0.1,0.5,0.1),"cm"),
+        axis.text.x = element_text(angle=90,hjust = 1),
+        text=element_text(family = "Times",face="plain"),
+        panel.background = element_rect(fill = "grey90"),
+        panel.grid.major = element_line(color = "white"),
+        panel.grid.minor = element_line(color = "white"),
+        panel.border = element_rect(colour = NA, fill=NA),
+        axis.text=element_text(size=10,family="Times"),
+        axis.title=element_text(size = 10,face="bold",family = "Times"),
+        legend.title = element_text(size=10,face="bold",family = "Times"),
+        legend.text = (element_text(size=10,family = "Times")))
+
+```
+
+## barplot with error bar
+```{r}
+library(dplyr)
+phylum_r_stats_new <- read.csv(file = "amplicon_data/phylum_r_stats_new.csv", header = TRUE, sep = ",", row.names = 1 )
+df_Proteobacteria=phylum_r_stats_new %>% group_by(Treat) %>% mutate(sem_Proteobacteria=sd(Proteobacteria)/sqrt(n())) #stdev
+mean_Proteobacteria = df_Proteobacteria %>% group_by(Treat) %>% mutate(avg_Proteobacteria=sum(Proteobacteria)/(n()))#combine mean and stdev in "mean_shannon"
+
+Proteobacteria <- ggplot(df_Proteobacteria, aes(x = phylum_r_stats_new$Treat, y = mean_Proteobacteria$avg_Proteobacteria, fill = Treat))+
+  geom_bar(position = 'dodge',stat="identity", colour='black')+
+  geom_col(alpha = 0.5, position = 'dodge')+
+  ylim(0,0.5)+
+  scale_fill_manual(values = cols_phylum,name="Treatment")+
+  labs(title="Proteobacteria",x="",y="Relative abundance")+
+  theme(legend.position="none",panel.background = element_rect(fill = "white",color="black"),
+        panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+        plot.title=(element_text(size=10,family = "Arial",face="plain",vjust = 3,hjust=0.5)),
+        text=element_text(family = "Arial",face="plain"),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+        axis.text.y=element_text(size=10,family="Arial"),
+        axis.ticks.x=element_blank(),
+        axis.title=element_text(size = 10,face="plain",family = "Arial",vjust = 1),
+        legend.title = element_text(size=10,face="plain",family = "Arial"),
+        legend.text = (element_text(size=10,family = "Arial")))+
+  geom_errorbar(aes(ymin=mean_Proteobacteria$avg_Proteobacteria - mean_Proteobacteria$sem_Proteobacteria, ymax = mean_Proteobacteria$avg_Proteobacteria + mean_Proteobacteria$sem_Proteobacteria),width = 0.2, colour = "black", position = position_dodge(.9))
+Proteobacteria
+```
+
+
+
+##alpha-diversity
+```{r}
+Diversity<-data.frame(estimate_richness(rarefied_mothur_phyloseq,split=TRUE,measures = NULL),sample_data(rarefied_mothur_phyloseq))
+head(Diversity,3)
+
+#Pielou's measure (ref:https://www.rdocumentation.org/packages/pez/versions/1.0-0/topics/evenness)
+H <- diversity(t(otu_table(rarefied_mothur_phyloseq)))
+Pielou <- H/log(specnumber(t(otu_table(rarefied_mothur_phyloseq))))
+head(Pielou)
+identical(rownames(as.data.frame(Pielou)),rownames(Diversity))
+d_diversity_Pielou <- mutate(Diversity,
+                        Nitro_till=c(rep("CN0",4),rep("CN60",4),rep("NTN0",4),rep("NTN60",4),
+                        rep("CN0",1),rep("CN60",4),rep("NTN0",4),rep("NTN60",3),rep("CN0",4),rep("CN60",4),
+                        rep("NTN0",4),rep("NTN60",4)),
+                        Cover_till=c(rep("NCC",8),rep("NCNT",8),rep("VC",5),
+                                     rep("VNT",7),rep("WC",8),rep("WNT",8)),
+                        Cover_nitro=c(rep("NCN0",4),rep("NCN60",4),rep("NCN0",4),rep("NCN60",4),
+                                      rep("VCN0",1),rep("VCN60",4),rep("VCN0",4),rep("VCN60",3),
+                                      rep("WN0",4),rep("WN60",4),rep("WN0",4),rep("WN60",4))) %>%
+  cbind(as.data.frame(Pielou))
+head(d_diversity_Pielou,3)
+
+```
+###shannon box plot
+```{r}
+#tiff('boxTillage_Shannon diversity.tiff', units="in", width=7, height=5, res=300)
+box_shannon <- 
+ggplot(d_diversity_Pielou,aes(x=Cover_nitro,y=Shannon,fill=Tillage))+
+  geom_boxplot(size=0.5,width=0.5,alpha=0.5,notch = FALSE,na.rm=TRUE,outlier.shape=NA)+
+  geom_jitter(shape=16, position=position_jitter(0.1),aes(fill=Tillage))+
+  scale_fill_manual(values = c("#E6AB02","aquamarine4"),name="Treatment")+
+  labs(title="",x="Treatment",y="Shannon Index")+
+  theme(legend.position="none",panel.background = element_rect(fill = "white",color="black"),
+        panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+        plot.title=(element_text(size=17,family = "Arial",face="bold",vjust = 3,hjust=0.5)),
+        text=element_text(family = "Arial",face="bold"),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+        axis.text.y=element_text(size=12,family="Arial"),
+        axis.text.x = element_text(family="Arial",size=12,angle=60,hjust = 1),
+        axis.title=element_text(size = 15,face="bold",family = "Arial",vjust = 1),
+        legend.title = element_text(size=13,face="bold",family = "Arial"),
+        legend.text = (element_text(size=10,family = "Arial")),
+        plot.margin = unit(c(1,1,1,1), "cm"))+
+  facet_wrap(~Tillage)+
+  theme_bw()
+
+```
+###shannon bar plot
+```{r}
+
+df_shannon=as.data.frame(d_diversity_Pielou) %>% group_by(Treat) %>% mutate(sem_shannon=sd(Shannon)/sqrt(n())) #stdev by treatment
+mean_shannon = df_shannon %>% group_by(Treat) %>% mutate(avg_shannon=sum(Shannon)/(n()))#combine mean and stdev in "mean_shannon"
+#tiff('tillage_shannon diversity.tiff', units="in", width=7, height=5, res=300)
+bar_shannon <- 
+ggplot(df_shannon, aes(x = Cover_nitro, y = mean_shannon$avg_shannon, fill = Tillage))+
+  geom_col(alpha = 0.5, position = 'dodge')+
+  ylim(0,8)+
+  scale_fill_manual(values = c("#E6AB02","aquamarine4"),name="Treatment")+
+  labs(title="",x="Treatment",y="Shannon")+
+  geom_errorbar(aes(ymin =mean_shannon$avg_shannon - mean_shannon$sem_shannon, 
+                    ymax = mean_shannon$avg_shannon + mean_shannon$sem_shannon),
+                width = 0.2, 
+                colour = "black", 
+                position = position_dodge(.9))+
+  facet_wrap(~Tillage)+
+  theme_bw()
+```
+### combine multiple figures together
+```{r}
+library("cowplot")
+#tiff('arrange_shannon_Pielou.tiff', units="in", width=21, height=7, res=300)
+plot_grid(box_shannon,bar_shannon,
+          labels = c("A", "B"),
+          ncol = 1, nrow = 2, align = "hv",rel_widths = c(1, 1),axis = 'l')
+
+```
+##beta-diversity
+###PCoA
+```{r}
+r_rarefied_mothur_phyloseq_bray<-vegdist(t(otu_table(r_rarefied_mothur_phyloseq)),method="bray",binary = FALSE)
+r_rarefied_mothur_phyloseq_PCoA<-ordinate(r_rarefied_mothur_phyloseq,method = "PCoA", r_rarefied_mothur_phyloseq_bray)
+
+plot_ordination(r_rarefied_mothur_phyloseq,r_rarefied_mothur_phyloseq_PCoA,
+                type="samples",color="Nitrogen", shape = "Cover")+
+  geom_point(size=4)+ggtitle("")+scale_color_manual(values = c("#2c5491","#d1495b","#edae49"))+
+  labs(x="PCoA1 [14.8%]",y="PCoA2 [9%]")+
+  geom_mark_ellipse(aes(color = Nitrogen, group=Nitrogen),expand=0)+
+  geom_vline(xintercept = c(0), size=0.2,linetype=2)+
+  geom_hline(yintercept = c(0), size=0.2,linetype=2)+
+  theme(legend.position="bottom",panel.background = element_rect(fill = "white",color="black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title=(element_text(size=10,family = "Arial",face="plain",hjust = 0.5,vjust = 3)),
+        text=element_text(family = "Arial",face="plain"),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+        axis.text=element_text(size=10,family="Arial"),
+        axis.title=element_text(size = 10,face="plain",family = "Arial"),
+        legend.title = element_text(size=10,face="plain",family = "Arial"),
+        legend.text = (element_text(size=10,family = "Arial")))+
+  annotate(geom="text", x=0.23, y=0.3, size=8,label="p",color="black", fontface="bold.italic")+
+  annotate(geom="text", x=0.3, y=0.3, size=8,label="< 0.0001",color="black", fontface="bold")
+```
+### PCoA biplot
+```{r}
+# phylum.rev.1 <- read.csv("amplicon_data/phylum.rev.1.csv", 
+#                          header = T, sep = ",", row.names = 1)
+# head(phylum.rev.1)
+# colnames(phylum.rev.1)
+# colnames(phylum.rev.1) <- c("Prt." , "Acd." ,  "Act." , "Frm.",   "Ntr.",  "Vrr.",
+#                             "Chl." , "Gmm."  , "Bct.", "Pln.", "Rok." ,   "Pts.")
+# phylum.rev_bray<-vegdist((phylum.rev.1),method="bray",binary = FALSE)
+# phylum.rev.pcoa <- cmdscale(phylum.rev_bray,
+#                             k=(nrow((phylum.rev.1)))-1, eig = T)
+# 
+# pcoa_score <- scores(phylum.rev.pcoa, choices = c(1, 2))
+# colnames(pcoa_score) <- c("PC1 (46.3%)", "PC2 (31.2%)")
+# env.data <- as.data.frame(sample_data(phylum_r_rarefied_mothur_phyloseq))
+# phylum.wa <- wascores(phylum.rev.pcoa$points[, 1:2]*5, phylum.rev.1)[-c(5,8,10),]
+# 
+# par(mfrow= c(1,3))
+# ordiplot(pcoa_score,
+#          type = "n",
+#          main = "",xlim = c(-0.1,0.1),ylim = c(-0.1,0.1))
+# abline(h = 0, lty = 3)
+# abline(v = 0, lty = 3)
+# points(pcoa_score, 
+#        col = env.data$Tillage,pch=19)
+# # Add weighted average projection of species
+# text(phylum.wa, rownames(phylum.wa), cex = 0.85, col = "darkcyan")
+# phylum.wa.arrow <- wascores(phylum.rev.pcoa$points[, 1:2]*4.5, phylum.rev.1)
+# legend("bottomleft", legend = c("Tillage","No-tillage"), pch = 19,
+#        col = c("black","red"))
+# arrows(0,0,phylum.wa.arrow[,1],phylum.wa.arrow[,2], col = "darkcyan",code=2, length = 0.05)
+# ordiplot(pcoa_score,
+#          type = "n",
+#          main = "",xlim = c(-0.1,0.1),ylim = c(-0.1,0.1))
+# abline(h = 0, lty = 3)
+# abline(v = 0, lty = 3)
+# points(pcoa_score, 
+#        col = env.data$Nitrogen,pch=19)
+# # Add weighted average projection of species
+# text(phylum.wa, rownames(phylum.wa), cex = 0.85, col = "darkcyan")
+# #phylum.wa.arrow <- wascores(phylum.rev.pcoa$points[, 1:2]*4.5, phylum.rev.1)
+# legend("bottomleft", legend = c("N0","N60"), pch = 19,
+#        col = c("black","red"))
+# arrows(0,0,phylum.wa.arrow[,1],phylum.wa.arrow[,2], col = "darkcyan",code=2, length = 0.05)
+# 
+# ordiplot(pcoa_score,
+#          type = "n",
+#          main = "",xlim = c(-0.1,0.1),ylim = c(-0.1,0.1))
+# abline(h = 0, lty = 3)
+# abline(v = 0, lty = 3)
+# points(pcoa_score, 
+#        col = env.data$Cover,pch=19)
+# # Add weighted average projection of species
+# text(phylum.wa, rownames(phylum.wa), cex = 0.85, col = "darkcyan")
+# #phylum.wa.arrow <- wascores(phylum.rev.pcoa$points[, 1:2]*4.5, phylum.rev.1)
+# legend("bottomleft", legend = c("No-cover","Wheat","Vetch"), pch = 19,
+#        col = c("black","green","red"))
+# arrows(0,0,phylum.wa.arrow[,1],phylum.wa.arrow[,2], col = "darkcyan",code=2, length = 0.05)
+# 
+```
+
+### CAP
+```{r}
+bray_may <- distance(physeq = rarefied_mothur_phyloseq, method = "bray")
+may_cap_ord <- ordinate(physeq = rarefied_mothur_phyloseq, method = "CAP", distance =bray_may, formula = ~Nitrogen+Tillage+Cover)
+
+may_cap_plot_nitro <- plot_ordination(physeq = rarefied_mothur_phyloseq,ordination = may_cap_ord,type="samples",color="Nitrogen",shape = "Tillage")+
+  geom_point(size=4)+scale_shape_manual(values = c(17,8))+
+  scale_color_manual(values = c("#2c5491","#d1495b","#edae49"))+ 
+  ggtitle("May") +
+  geom_mark_ellipse(aes(color = Nitrogen, group=Nitrogen),expand=0)+
+  geom_vline(xintercept = c(0), size=0.2,linetype=2)+
+  geom_hline(yintercept = c(0), size=0.2,linetype=2)+
+  theme(legend.position="",panel.background = element_rect(fill = "white",color="black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title=(element_text(size=15,family = "Arial",face="plain",hjust = 0.5,vjust = 3)),
+        text=element_text(family = "Arial",face="plain"),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+        axis.text=element_text(size=15,family="Arial"),
+        axis.title=element_text(size = 15,face="plain",family = "Arial"),
+        legend.title = element_text(size=15,face="plain",family = "Arial"),
+        legend.text = (element_text(size=15,family = "Arial")))+
+  annotate(geom="text", x=0.8, y=1.5, size=4,label="Adj.R^{2}",parse=T,color="black",fontface="italic")+
+  annotate(geom="text", x=1.2, y=1.5, size=4,label="= 0.152",color="black", fontface="plain")
+
+may_arrowmat <- vegan::scores(may_cap_ord,display="bp");may_arrowmat
+#Scores shown. These must include some of the alternatives species or sp for species scores, sites or wa for site scores, lc for linear constraints or LC scores, or bp for biplot arrows or cn for centroids of factor constraints instead of an arrow, and reg for regression coefficients (a.k.a. canonical coefficients).
+rownames(may_arrowmat)<- c("N60","No_tillage","Vetch","Wheat")
+may_arrowdf <- data.frame(labels = rownames(may_arrowmat), may_arrowmat)
+may_arrow_map <- aes(xend = CAP1, 
+                 yend = CAP2, 
+                 x = 0, 
+                 y = 0, 
+                 shape = NULL, 
+                 color = NULL, 
+                 label = labels)
+
+may_label_map <- aes(x = 1.3 * CAP1, 
+                 y = 1.3 * CAP2, 
+                 shape = NULL, 
+                 color = NULL, 
+                 label = labels)
+
+may_arrowhead = arrow(length = unit(0.02, "npc"))
+
+may_cap_arrow_nitro <- may_cap_plot_nitro + 
+  geom_segment(
+    mapping = may_arrow_map, 
+    size = 0.5, 
+    data = may_arrowdf, 
+    color = "black", 
+    arrow = may_arrowhead
+  ) + 
+  geom_text(
+    mapping = may_label_map, 
+    size = 5,  
+    data = may_arrowdf, 
+    show.legend = FALSE
+  )
+
+may_cap_arrow_nitro
+set.seed(2021)
+anova(may_cap_ord,permutations = how(nperm = 9999), by="margin")
+RsquareAdj(may_cap_ord)
+
+
+step.backward <-
+  ordistep(may_cap_ord,
+           permutations = how(nperm = 999)
+  )
+RsquareAdj(step.backward)
+
+```
+
+### NMDS 
+```{r}
+r_rarefied_mothur_phyloseq 
+set.seed(12345)
+r_rarefied_mothur_phyloseq_ordinate <- ordinate(r_rarefied_mothur_phyloseq,"NMDS", "bray")
+#tiff('NMDS_cover.tiff', units="in", width=7, height=5, res=300)
+plot_ordination(r_rarefied_mothur_phyloseq, r_rarefied_mothur_phyloseq_ordinate, type="samples", color="Cover", title="NMDS")
+#A good rule of thumb: stress < 0.05 provides an excellent representation in reduced dimensions, < 0.1 is great, < 0.2 is good/ok, and stress < 0.3 provides a poor representation
+```
+### CCA
+```{r}
+r_rarefied_mothur_phyloseq_CCA <- ordinate(physeq = rarefied_mothur_phyloseq, method = "CCA", distance =bray_may, formula = ~Nitrogen+Tillage+Cover)
+cca <- plot_ordination(r_rarefied_mothur_phyloseq,r_rarefied_mothur_phyloseq_CCA,
+                type="samples",color="Nitrogen", shape = "Tillage")+
+  geom_point(size=4)+ggtitle("May")+scale_color_manual(values = c("#1b3f7d","#d1495b","#edae49"))+
+  labs(x="CCA1",y="CCA2")+
+  theme(legend.position="none",panel.background = element_rect(fill = "white",color="black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title=(element_text(size=10,family = "Arial",face="plain",hjust = 0.5,vjust = 3)),
+        text=element_text(family = "Arial",face="plain"),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+        axis.text=element_text(size=10,family="Arial"),
+        axis.title=element_text(size = 10,face="plain",family = "Arial"),
+        legend.title = element_text(size=10,face="plain",family = "Arial"),
+        legend.text = (element_text(size=10,family = "Arial")))
+cca
+```
+#put all figures together
+```{r}
+library(cowplot)
+plot_grid(may_cap_arrow_nitro,cca,
+          labels = c("A", "B"),
+          ncol = 2, nrow = 1,rel_widths = c(1,1), align = "hv")
+```
+## Simper analysis--phylum level
+```{r}
+sampledata <- sample_data(phylum_r_rarefied_mothur_phyloseq)
+head(sampledata)
+sr_phylum_r_rarefied_mothur_phyloseq <- t(sqrt(otu_table(phylum_r_rarefied_mothur_phyloseq)))#square root normalization
+set.seed(1234)
+simper_output_tillage <- simper(sr_phylum_r_rarefied_mothur_phyloseq,sampledata$Tillage,permutations =100, trace = FALSE, parallel = getOption("mc.cores"))
+head(simper_output_tillage)
+tillage_phylum <- summary(simper_output_tillage,ordered = TRUE,digits = max(3,getOption("digits") - 3))
+head(tillage_phylum)
+#write.csv(as.data.frame(tillage_phylum$Conventional_No_tillage),file = "1stsimper_output_tillage.csv")
+#average:Average contribution to overall dissimilarity.overall:The overall between-group dissimilarity.sd:Standard deviation of contribution.ratio:Average to sd ratio.ava, avb/ava:Average abundances per group.ord:An index vector to order vectors by their contribution or order cusum back to the original data order.cusum:Ordered cumulative contribution.p:Permutation p-value. Probability of getting a larger or equal average contribution in random permutation of the group factor.
+
+```
+## PCA bioplot
+```{r}
+library(devtools)
+install_github("vqv/ggbiplot")
+library(ggbiplot)
+##PCA of phylum
+phylum_r_rarefied_mothur_phyloseq43 <- subset_samples(phylum_r_rarefied_mothur_phyloseq,sample_names(phylum_r_rarefied_mothur_phyloseq)!="VCN0_4")
+phylum <- t(otu_table(phylum_r_rarefied_mothur_phyloseq43))
+tax <- as.matrix(tax_table(phylum_r_rarefied_mothur_phyloseq43))
+phylum.rev.1 <- read.csv(file = "amplicon_data/phylum_rev.csv", sep = ",", row.names = 1)#phylum_rev is the file been revised accroding to the simper results, we selected first several phylum which cumulation explaination are over 70%
+head(phylum.rev.1)
+pca.phylum <- prcomp(as.data.frame(phylum.rev.1),center = TRUE, scale. = TRUE)
+summary(pca.phylum)
+str(pca.phylum)
+phylum.group_tillage <- c(rep("Tillage",8),rep("No_tillage", 8),rep("Tillage",4),rep("No_tillage", 7),rep("Tillage", 8),rep("No_tillage", 8))
+ggbiplot_tillage <- 
+  ggbiplot(pca.phylum,ellipse=TRUE,labels.size = 1.5, 
+                             circle=FALSE,obs.scale = 1, var.scale = 1,
+                             groups=phylum.group_tillage, 
+                             labels = row.names(phylum),
+                             var.axes=TRUE,
+                             varname.size = 2.5,
+                             varname.adjust =2,
+                             varname.abbrev = TRUE,
+                             arrow.color="blue")+
+  scale_colour_manual(name="Treatment", 
+                      values= c("forest green", "coral", "dark blue"))#+
+  ggtitle("")+
+  theme_minimal(base_size = 11)+
+  theme(legend.position = "bottom")+xlim(-6, 6) + ylim(-5, 5)
+phylum.group_nitrogen <- c(rep("N0",4),rep("N60", 4),rep("N0",4),rep("N60", 4),rep("N60", 4),rep("N0",4),rep("N60", 3),rep("N0",4),rep("N60", 4),rep("N0",4),rep("N60", 4))
+ggbiplot_nitro <- ggbiplot(pca.phylum,ellipse=TRUE,
+                           labels.size = 1.5, 
+                           circle=FALSE,
+                           obs.scale = 1, 
+                           var.scale = 1,
+                           groups=phylum.group_nitrogen, 
+                           labels = row.names(phylum),
+                           var.axes=TRUE,
+                           varname.size = 2.5,
+                           varname.adjust =2,
+                           varname.abbrev = TRUE,arrow.color="blue")+
+  scale_colour_manual(name="Treatment", values= c("forest green", "coral", "dark blue"))#+
+  ggtitle("")+
+  theme_minimal()+
+  theme(legend.position = "bottom")+xlim(-6, 6) + ylim(-5, 5)
+ 
+phylum.group_cover <- c(rep("No_cover",16),rep("Vetch", 11),rep("Wheat",16))
+ggbiplot_cover <- ggbiplot(pca.phylum,ellipse=TRUE,labels.size = 1.5, 
+                           circle=FALSE,obs.scale = 1, 
+                           var.scale = 1,groups=phylum.group_cover, 
+                           labels = row.names(phylum),
+                           var.axes=TRUE,
+                           varname.size = 2.5,
+                           varname.adjust =2,
+                           varname.abbrev = TRUE,arrow.color="blue")+
+  scale_colour_manual(name="Treatment", values= c("forest green", "coral", "dark blue"))#+
+  ggtitle("")+
+  theme_minimal()+
+  xlim(-6, 6) + ylim(-5, 5)
+
+library("ggpubr")
+ggarrange(ggbiplot_tillage,ggbiplot_nitro,ggbiplot_cover,
+          labels = c("A","B","C"),ncol = 3, nrow = 1,
+          common.legend = F,legend = "bottom",hjust = -0.5,vjust =4 )
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r pressure, echo=FALSE}
+
+```
+
